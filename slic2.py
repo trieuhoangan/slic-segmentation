@@ -7,7 +7,7 @@ import random
 from heapq import nlargest
 import cv2 as cv 
 from matplotlib import pyplot as plt 
-
+import os
 def rgb2lab(inputColor):
 
     num = 0
@@ -136,8 +136,8 @@ def slic_distance(x,y):
         d.append(x[i]-y[i])
     d_color = d[0]*d[0]+d[1]*d[1]+d[2]*d[2]
     d_space = d[3]*d[3]+d[4]*d[4]
-    weight_color = 50
-    weight_space = math.sqrt(500/8)
+    weight_color = 10
+    weight_space = 100
     distance = math.sqrt(d_color/(weight_color*weight_color) + d_space/(weight_space*weight_space))
     return distance
 def kmeans(X,k,labels,low_x,high_x,low_y,high_y):
@@ -155,7 +155,7 @@ def kmeans(X,k,labels,low_x,high_x,low_y,high_y):
         labels = classify_data(X,k,centers,labels,low_x,high_x,low_y,high_y)
         old_cluster = centers
         centers = update_center(X,k,centers,labels,low_x,high_x,low_y,high_y)
-    clusters = [labels,centers]
+    clusters = centers
     return clusters
 def get_super_pixel():
 
@@ -201,7 +201,7 @@ def get_grid_number(length,grid_size):
     # if grid_number*grid_size >= length:
     grid_number = grid_number - 3
     return grid_number
-def slic_initiate_center(X,cluster,h,w,S):
+def slic_initiate_center(X,h,w,S):
     # initiate centers of superpixels in slic
     # take central points of each grid unit
     clusters = []
@@ -212,22 +212,27 @@ def slic_initiate_center(X,cluster,h,w,S):
     for i in range(0,horizonal_grid):
         for j in range(0,vertical_grid):
             center = []
-            new_x = int(S*(x+i+i+1)/2)
-            new_y = int(S*(y+j+j+1)/2)
-            center = X[new_x][new_y]
+            new_x = int(S*(i+0.5))
+            new_y = int(S*(j+0.5))
+            # print(len(X[new_x][new_y]))
+            center.extend( X[new_x][new_y])
+
             center.append(new_x)
             center.append(new_y)
-            cluster.append(center)
+            # print(len(center))
+            clusters.append(center)
     return clusters
 def slic_assign_labels(X,clusters,k,S,labels,distances):
     h,w,channels = X.shape
-    for center in clusters:
+
+    for l in range(0,len(clusters)):
+        center = clusters[l]
         if center[3] <= 2*S:
             low_X = 0
         else:
             low_X = center[3]-2*S
 
-        if h-center[3] <= 2*S:
+        if h - center[3] <= 2*S:
             high_X = h-1
         else:
             high_X = center[3]+2*S 
@@ -235,23 +240,25 @@ def slic_assign_labels(X,clusters,k,S,labels,distances):
         if center[4] <= 2*S:
             low_Y = 0
         else:
-            low_Y = center[4]-2*S
+            low_Y = center[4] - 2*S
         
         if w-center[4] <= 2*S:
             high_Y = w-1
         else:
             high_Y = center[4]+2*S
-
-        for i in range(low_X,high_X):
-            for j in range(low_Y,high_Y):
-                point = X[i][j]
+        
+        for i in range(int(low_X),int(high_X)):
+            for j in range(int(low_Y),int(high_Y)):
+                point = []
+                point.extend(X[i][j])
                 point.append(i)
                 point.append(j)
                 di = slic_distance(center,point)
-                if di<distances[i][j]:
+                # print(di)
+                if di < distances[i][j]:
                     distances[i][j] = di
-                    labels[i][j] = clusters.index(center)
-
+                    labels[i][j] = l
+    return labels
 def slic_update_center(X,clusters,threshold):
     # update center using slic algorithm 
     # move center to lowest gradient position in area 3x3 around old center
@@ -259,52 +266,151 @@ def slic_update_center(X,clusters,threshold):
     for center in clusters:
         tmp = center
         min_dis = 100000
-        min_tmp = clusters[i]
+        min_tmp = clusters[0]
         for i in range(center[3]-1,center[3]+1):
             for j in range(center[4]-1,center[4]+1):
-                tmp_dis = slic_distance(X[i][j],center)
-                tmp = X[i][j]
+                tmp = []
+                tmp.extend(X[i][j])
                 tmp.append(i)
                 tmp.append(j)
+                tmp_dis = slic_distance(tmp,center)
                 if min_dis > tmp_dis and compute_residual_error(center,tmp)>threshold:
                     min_dis = tmp_dis
                     min_tmp = tmp
         clusters[clusters.index(center)] = min_tmp
     return clusters
 def slic_stop_condition(old_cluster,new_cluster,threshold):
+    if len(old_cluster) == 0:
+        return False
     for i in range(0,len(old_cluster)):
         if compute_residual_error(old_cluster[i],new_cluster[i]) > threshold:
             return False
     return True
-def slic_kmean():
-    
-    pass 
+def slic_kmean(X,N,k,S,cluster,labels,distances,threshold):
+    # step 1 : init
+    # step 2 : assign labels
+    # step 3 : update centers
+    # step 4 : check stop condition
+    h,w,c = X.shape
+    old_cluster = []
+    clusters = slic_initiate_center(X,h,w,S)
+    slic_assign_labels(X,clusters,k,S,labels,distances)
+    while slic_stop_condition(old_cluster,clusters,threshold) == False:
+        old_cluster = clusters
+        clusters = slic_update_center(X,clusters,threshold)
+        slic_assign_labels(X,clusters,k,S,labels,distances)
+    return clusters
 def compute_residual_error(new_center,old_center):
     norm = math.sqrt(pow(old_center[3]-new_center[3],2)+pow(old_center[4]-new_center[4],2))
-    return norm 
-if __name__ == "__main__":
-    image = cv.imread("image.jpg")
+    return norm
+def segment_cloud(ima_folder,ima_name,slic_path,result_path,indexed_path):
+    image = cv.imread("{}\{}".format(ima_folder,ima_name))
     h,w,channels = image.shape
     distances = np.zeros((h,w))
-    labels = np.zeros((h,w))
+    labels = np.zeros((h,w),dtype=int)
+    CIELAB_pic = np.zeros((h,w,3))
     for i in range(0,h):
         for j in range(0,w):
             labels[i][j] = -1
             distances[i][j] = 100000
-
+            CIELAB_pic[i][j] = rgb2lab(image[i][j])
+    
     print("{} {}".format(h,w))
     # N is number of total pixels
     # k is desired number of superpixels
     # S is grid size interval
     N = h*w
-    k = 8000
-    S = math.sqrt(N/k)
-    # size_of_super_pixel = int(N/number_of_superpixel)
-    error_threshold = 0.02
-    new_pic = np.zeros((h,w,3))
-    start_x = 0
-    start_y = 0
+    S = 96
+    k = int(N/(S*S)) + 1
+    error_threshold = 0.2
+    cluster = []
+    cluster = slic_kmean(CIELAB_pic,N,k,S,cluster,labels,distances,error_threshold)
+    # cluster = slic_initiate_center(CIELAB_pic,h,w,S)
+    # labels = slic_assign_labels(CIELAB_pic,cluster,k,S,labels,distances)
+
+    new_pic = np.zeros((h,w,3),dtype = int)
+    print(len(cluster))
     
-    # plt.imshow(new_pic[low_x:high_x,low_y:high_y,::-1])
-    plt.imshow(new_pic[:,:,::-1])
-    plt.show()
+
+    print("Done clustering")
+    color_code = np.zeros((len(cluster),3),dtype=int)
+    color_count = np.zeros((len(cluster)),dtype=int)
+    for i in range(0,h):
+        for j in range(0,w):
+            label = labels[i][j]
+            for k in range (0,2):
+                color_code[label][k] = color_code[label][k] + image[i][j][k]
+            color_count[label] = color_count[label] + 1
+    for i in range(0,len(color_code)):
+        for k in range(0,2):
+            color_code[i][k] = int(color_code[i][k]/color_count[i])
+    for i in range(0,h):
+        for j in range(0,w):
+            label = labels[i][j]
+            new_pic[i][j] = color_code[label]
+    for i in range(1,h-1):
+        for j in range(1,w-1):
+            if labels[i][j] < 0 :
+                new_pic[i][j] = [0,0,0]
+                print(-1)
+            else:
+                label = labels[i][j]
+                
+                for k in range(i-1,i+1):
+                    for l in range(j-1,j+1):
+                        if labels[k][l] != label:
+                            image[k][l] = [0,255,255]
+    
+    cv.imwrite("{}\{}".format(slic_path,ima_name),image)       
+    cv.imwrite("{}\{}".format(indexed_path,ima_name),new_pic)   
+    for i in range(0,h):
+        for j in range(0,w):
+            ave = (new_pic[i][j][0] + new_pic[i][j][1] + new_pic[i][j][2])/3
+            if ave > 60:
+                new_pic[i][j] = [255,255,255]
+            else:
+                new_pic[i][j] = [0,0,0]
+    cv.imwrite("{}\{}".format(result_path,ima_name),new_pic)   
+    # print(new_pic.shape)
+    
+    # plt.imshow(image[:,:,::-1])
+    # plt.show()
+def check_GT(GTMaps_path,result_path):
+    GTs = []
+    results = []
+    for filename in os.listdir(GTMaps_path):
+        GTs.append(filename)
+    for filename in os.listdir(result_path):
+        results.append(filename)
+    record_file = open("custom_slic_results.txt","w",encoding="utf-8")
+    total_acc = 0
+    for i in range(0,len(results)):
+        result = "{}/{}".format(result_path,results[i])
+        GT = "{}/{}".format(GTMaps_path,GTs[i])
+        result_ima = cv.imread(result,0)
+        GT_ima = cv.imread(GT,0)
+        h,w = GT_ima.shape
+        same_path = 0
+        for k in range(0,h):
+            for l in range(0,w):
+                if result_ima[k][l] == GT_ima[k][l]:
+                    same_path = same_path + 1
+        acc = same_path/(h*w)
+        total_acc = total_acc + acc
+        record_file.write("{} have accuracy {}\n".format(results[i],acc))
+        print(i)
+    total_acc = total_acc/len(results)
+    record_file.write("average accuracy :{}\n".format(total_acc))
+    record_file.close
+if __name__ == "__main__":
+    images_path  = "images"
+    GTMaps_path = "GTmaps"
+    result_path = "custom_slic_16superpix_res"
+    indexed_path = "custom_slic_16spuperpix_index"
+    slic_path = "custom_slic_superpix16_image"
+    counter = 0
+    for filename in os.listdir(images_path):
+        segment_cloud(images_path,filename,slic_path,result_path,indexed_path)
+        counter = counter + 1
+        print(counter)
+    check_GT(GTMaps_path,result_path)
